@@ -20,7 +20,7 @@
 package net.william278.husksync.event;
 
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.InteractionResult;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.data.DataSnapshot;
 import net.william278.husksync.user.OnlineUser;
@@ -44,7 +44,8 @@ public interface FabricEventDispatcher extends EventDispatcher {
                     (net.fabricmc.fabric.api.event.Event<?>) field.invoke(event);
 
             final FabricEventCallback<T> invoker = (FabricEventCallback<T>) fabricEvent.invoker();
-            return invoker.invoke(event) == ActionResult.FAIL;
+            final InteractionResult result = invoker.invoke(event);
+            return result == InteractionResult.FAIL || (event instanceof Cancellable cancellable && cancellable.isCancelled());
         } catch (InvocationTargetException | NoSuchMethodException | IllegalAccessException e) {
             getPlugin().log(Level.WARNING, "Failed to fire event (" + event.getClass().getName() + ")", e);
             return false;
@@ -54,7 +55,7 @@ public interface FabricEventDispatcher extends EventDispatcher {
     @Override
     default boolean isEventThread() {
         final MinecraftServer server = ((FabricHuskSync) getPlugin()).getMinecraftServer();
-        return server != null && server.isOnThread();
+        return server != null && server.isSameThread();
     }
 
     @NotNull

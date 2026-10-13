@@ -31,11 +31,7 @@ import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
-//#if MC>=12104
 import net.kyori.adventure.platform.modcommon.MinecraftServerAudiences;
-//#else
-//$$ import net.kyori.adventure.platform.fabric.FabricServerAudiences;
-//#endif
 import net.minecraft.server.MinecraftServer;
 import net.william278.desertwell.util.Version;
 import net.william278.husksync.adapter.DataAdapter;
@@ -43,6 +39,8 @@ import net.william278.husksync.adapter.GsonAdapter;
 import net.william278.husksync.adapter.SnappyGsonAdapter;
 import net.william278.husksync.api.FabricHuskSyncAPI;
 import net.william278.husksync.command.PluginCommand;
+import net.william278.husksync.compat.FabricCommandBridge;
+import net.william278.husksync.compat.FabricDiagnosticBridge;
 import net.william278.husksync.config.Locales;
 import net.william278.husksync.config.Server;
 import net.william278.husksync.config.Settings;
@@ -65,9 +63,7 @@ import net.william278.husksync.user.OnlineUser;
 import net.william278.husksync.util.FabricTask;
 import net.william278.husksync.util.LegacyConverter;
 import net.william278.toilet.Toilet;
-import net.william278.toilet.fabric.FabricToilet;
 import net.william278.uniform.Uniform;
-import net.william278.uniform.fabric.FabricUniform;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -79,6 +75,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.logging.Level;
 
 @Getter
@@ -95,17 +92,15 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
     private final Set<UUID> lockedPlayers = Sets.newConcurrentHashSet();
     private final Set<UUID> disconnectingPlayers = Sets.newConcurrentHashSet();
     private final Map<UUID, FabricUser> playerMap = Maps.newConcurrentMap();
+    private final ScheduledExecutorService taskExecutor = FabricTask.createExecutor();
 
     private Logger logger;
     private ModContainer mod;
     private MinecraftServer minecraftServer;
-    private boolean disabling;
+    private volatile boolean disabling;
     private Gson gson;
-    //#if MC>=12104
     private MinecraftServerAudiences audiences;
-    //#else
-    //$$ private FabricServerAudiences audiences;
-    //#endif
+    private FabricCommandBridge uniform;
     private Toilet toilet;
     private Database database;
     private RedisManager redisManager;
@@ -138,26 +133,43 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
         });
 
         // Register commands
-        initialize("commands", (plugin) -> getUniform().register(PluginCommand.Type.create(this)));
+        initialize("commands", (plugin) -> {
+            this.uniform = new FabricCommandBridge(mod.getMetadata().getId());
+            this.uniform.register(PluginCommand.Type.create(this));
+            this.uniform.registerCallback();
+        });
 
         // Load HuskSync after server startup
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             this.minecraftServer = server;
-            this.onEnable();
+            try {
+                this.onEnable();
+            } catch (RuntimeException | Error failure) {
+                // Startup may fail after opening a connection but before constructing the event listener.
+                try {
+                    this.onDisable();
+                } catch (RuntimeException | Error cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+                throw failure;
+            }
         });
 
         // Unload HuskSync before server shutdown
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> this.onDisable());
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
+            this.minecraftServer = null;
+            this.playerMap.clear();
+            this.playerCustomDataStore.clear();
+            this.lockedPlayers.clear();
+            this.disconnectingPlayers.clear();
+        });
     }
 
     private void onEnable() {
         // Audiences
-        //#if MC>=12104
         this.audiences = MinecraftServerAudiences.of(minecraftServer);
-        //#else
-        //$$ this.audiences = FabricServerAudiences.of(minecraftServer);
-        //#endif
-        this.toilet = FabricToilet.create(getDumpOptions(), minecraftServer);
+        this.toilet = new FabricDiagnosticBridge(getDumpOptions(), minecraftServer);
 
         // Check compatibility
         checkCompatibility();
@@ -236,32 +248,63 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
     }
 
     private void onDisable() {
+        if (this.disabling) {
+            return;
+        }
         // Handle shutdown
         this.disabling = true;
+        final List<Throwable> failures = new ArrayList<>();
 
-        // Complete player saves, including any other pending async saves
+        // Complete player saves, including any other pending async saves.
         if (this.eventListener != null) {
-            this.eventListener.handlePluginDisable();
+            shutdownStep("pending player saves", this.eventListener::handlePluginDisable, failures);
+            if (!failures.isEmpty() && this.dataSyncer != null) {
+                // A synchronous snapshot failure must not skip waiting for saves that were already queued.
+                shutdownStep("queued player saves", this.dataSyncer::awaitPendingSaves, failures);
+            }
         }
 
         // Clear Redis checkout state after snapshots are correctly persisted
-        if (this.dataSyncer != null) {
-            this.dataSyncer.terminate();
+        if (this.dataSyncer != null && failures.isEmpty()) {
+            shutdownStep("data syncer", this.dataSyncer::terminate, failures);
         }
 
-        // Close DB/Redis connections after checkout state is cleared
-        if (this.eventListener != null) {
-            this.eventListener.closeConnections();
+        // These may already be open even when initialization failed before the event listener was registered.
+        if (this.database != null) {
+            shutdownStep("database connection", this.database::terminate, failures);
+        }
+        if (this.redisManager != null) {
+            shutdownStep("Redis connection", this.redisManager::terminate, failures);
         }
 
         // Cancel tasks, close audiences
         if (audiences != null) {
-            this.audiences.close();
+            shutdownStep("audiences", this.audiences::close, failures);
+            this.audiences = null;
         }
-        this.cancelTasks();
+        shutdownStep("scheduled tasks", this::cancelTasks, failures);
+        if (this.uniform != null) {
+            shutdownStep("command executor", this.uniform::shutdown, failures);
+        }
+        FabricHuskSyncAPI.unregister();
+
+        if (!failures.isEmpty()) {
+            final IllegalStateException failure = new IllegalStateException("HuskSync shutdown did not complete cleanly");
+            failures.forEach(failure::addSuppressed);
+            throw failure;
+        }
 
         // Complete shutdown
         log(Level.INFO, "Successfully disabled HuskSync v" + getPluginVersion());
+    }
+
+    private void shutdownStep(@NotNull String name, @NotNull Runnable task, @NotNull List<Throwable> failures) {
+        try {
+            task.run();
+        } catch (RuntimeException | Error failure) {
+            log(Level.SEVERE, "Failed to close " + name, failure);
+            failures.add(failure);
+        }
     }
 
 
@@ -273,7 +316,7 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
 
     @Override
     public boolean isDependencyLoaded(@NotNull String name) {
-        return FabricLoader.getInstance().isModLoaded(name);
+        return FabricLoader.getInstance().isModLoaded(name.toLowerCase(Locale.ROOT));
     }
 
     @Override
@@ -291,7 +334,7 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
     @Override
     @NotNull
     public Uniform getUniform() {
-        return FabricUniform.getInstance(mod.getMetadata().getId());
+        return uniform;
     }
 
     @NotNull
@@ -362,7 +405,7 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
     @Override
     @NotNull
     public Version getMinecraftVersion() {
-        return Version.fromString(minecraftServer.getVersion());
+        return Version.fromString(minecraftServer.getServerVersion());
     }
 
     @NotNull
@@ -372,11 +415,16 @@ public class FabricHuskSync implements DedicatedServerModInitializer, HuskSync, 
     }
 
     @Override
+    public boolean isStrictSnapshotDeserialization() {
+        return true;
+    }
+
+    @Override
     @NotNull
     public String getServerVersion() {
         return String.format("%s %s/%s", getPlatformType(), FabricLoader.getInstance()
                 .getModContainer("fabricloader").map(l -> l.getMetadata().getVersion().getFriendlyString())
-                .orElse("unknown"), minecraftServer.getVersion());
+                .orElse("unknown"), minecraftServer.getServerVersion());
     }
 
     @Override

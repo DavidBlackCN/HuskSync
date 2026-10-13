@@ -44,6 +44,8 @@
 **Ready?** [It's syncing time!](https://william278.net/docs/husksync/setup)
 
 ## Compatibility
+This branch also builds the server-side Fabric port for Minecraft **26.3**, requiring **Java 25**, **Fabric Loader 0.19.5+**, and **Fabric API 0.162.0+26.3**. The Fabric port retains its alpha status. Install the `HuskSync-Fabric-...+mc.26.3.jar` artifact from `target/`; its supporting libraries are bundled. All synchronized servers must use Fabric and the same Minecraft version; Paper snapshots are not interchangeable with Fabric snapshots.
+
 HuskSync supports the following [compatible versions](https://william278.net/docs/husksync/compatibility) of Minecraft. Since v3.7, you must download the correct version of HuskSync for your server:
 
 |    Minecraft    | Latest HuskSync | Java Version | Platforms     | Support Status                |
@@ -81,13 +83,13 @@ Requires a [MySQL/MariaDB/Mongo/PostgreSQL database](https://william278.net/docs
 4. Start every server again and synchronization will begin.
 
 ## Development
-To build HuskSync, simply run the following in the root of the repository (building requires Java 21). Builds will be output in `/target`:
+To build HuskSync, simply run the following in the root of the repository (building requires Java 25). Builds will be output in `/target`:
 
 ```bash
 ./gradlew clean build
 ```
 
-HuskSync uses `essential-multi-version` (Fabric) and `preprocessor` (Bukkit) to target multiple versions of Minecraft in one codebase - [check here](https://github.com/WiIIiam278/PreProcessor?tab=readme-ov-file#code-example) for a preprocessor comment logic reference.
+Fabric 26.3 uses Fabric Loom with Minecraft's native Mojang names. Bukkit uses `preprocessor` to target multiple versions of Minecraft in one codebase - [check here](https://github.com/WiIIiam278/PreProcessor?tab=readme-ov-file#code-example) for a preprocessor comment logic reference.
 
 ### License
 HuskSync is licensed under the Apache 2.0 license.

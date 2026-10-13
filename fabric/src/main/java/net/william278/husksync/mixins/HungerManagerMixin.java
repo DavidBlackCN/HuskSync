@@ -17,21 +17,19 @@
  *  limitations under the License.
  */
 
-//#if MC>=12104
 package net.william278.husksync.mixins;
 
-import net.minecraft.entity.player.HungerManager;
+import net.minecraft.world.food.FoodData;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
-@Mixin(HungerManager.class)
+@Mixin(FoodData.class)
 public interface HungerManagerMixin {
 
-    @Accessor
+    @Accessor("exhaustionLevel")
     float getExhaustion();
 
-    @Accessor("exhaustion")
+    @Accessor("exhaustionLevel")
     void setExhaustion(float exhaustion);
 
 }
-//#endif

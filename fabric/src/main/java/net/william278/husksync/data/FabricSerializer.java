@@ -21,13 +21,11 @@ package net.william278.husksync.data;
 
 import com.google.gson.reflect.TypeToken;
 import com.mojang.serialization.Dynamic;
-import com.mojang.serialization.DynamicOps;
 import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
-import net.minecraft.datafixer.TypeReferences;
-import net.minecraft.item.ItemStack;
+import net.minecraft.util.datafix.fixes.References;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.nbt.*;
-import net.minecraft.registry.DynamicRegistryManager;
 import net.william278.desertwell.util.Version;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.HuskSync;
@@ -36,8 +34,6 @@ import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import static net.william278.husksync.data.Data.Items.Inventory.*;
@@ -71,31 +67,20 @@ public abstract class FabricSerializer {
                 throws DeserializationException {
             // Read item NBT from string
             final FabricHuskSync plugin = (FabricHuskSync) getPlugin();
-            final NbtCompound root;
+            final CompoundTag root;
             try {
-                //#if MC<12105
-                //$$ root = StringNbtReader.parse(serialized);
-                //#else
-                root = StringNbtReader.readCompound(serialized);
-                //#endif
-            } catch (Throwable e) {
+                root = TagParser.parseCompoundFully(serialized);
+            } catch (Exception e) {
                 throw new DeserializationException("Failed to read item NBT from string (%s)".formatted(serialized), e);
             }
 
             // Deserialize the inventory data
-            //#if MC<12105
-            //$$ final NbtCompound items = root.contains(ITEMS_TAG) ? root.getCompound(ITEMS_TAG) : null;
-            //$$ return FabricData.Items.Inventory.from(
-            //$$     items != null ? getItems(items, dataMcVersion, plugin) : new ItemStack[INVENTORY_SLOT_COUNT],
-            //$$     root.contains(HELD_ITEM_SLOT_TAG) ? root.getInt(HELD_ITEM_SLOT_TAG) : 0
-            //$$ );
-            //#else
-            final NbtCompound items = root.contains(ITEMS_TAG) ? root.getCompoundOrEmpty(ITEMS_TAG) : null;
+            final CompoundTag items = root.getCompound(ITEMS_TAG)
+                    .orElseThrow(() -> new IllegalArgumentException("Missing inventory items compound"));
             return FabricData.Items.Inventory.from(
-                items != null ? getItems(items, dataMcVersion, plugin) : new ItemStack[INVENTORY_SLOT_COUNT],
-                root.getInt(HELD_ITEM_SLOT_TAG, 0)
+                getItems(items, dataMcVersion, plugin),
+                root.getIntOr(HELD_ITEM_SLOT_TAG, 0)
             );
-            //#endif
         }
 
         @Override
@@ -107,11 +92,11 @@ public abstract class FabricSerializer {
         @Override
         public String serialize(@NotNull FabricData.Items.Inventory data) throws SerializationException {
             try {
-                final NbtCompound root = new NbtCompound();
+                final CompoundTag root = new CompoundTag();
                 root.put(ITEMS_TAG, serializeItemArray(data.getContents(), (FabricHuskSync) getPlugin()));
                 root.putInt(HELD_ITEM_SLOT_TAG, data.getHeldItemSlot());
                 return root.toString();
-            } catch (Throwable e) {
+            } catch (Exception e) {
                 throw new SerializationException("Failed to serialize inventory item NBT to string", e);
             }
         }
@@ -130,13 +115,9 @@ public abstract class FabricSerializer {
                 throws DeserializationException {
             final FabricHuskSync plugin = (FabricHuskSync) getPlugin();
             try {
-                //#if MC<12105
-                //$$ final NbtCompound items = StringNbtReader.parse(serialized);
-                //#else
-                final NbtCompound items = StringNbtReader.readCompound(serialized);
-                //#endif
+                final CompoundTag items = TagParser.parseCompoundFully(serialized);
                 return FabricData.Items.EnderChest.adapt(getItems(items, dataMcVersion, plugin));
-            } catch (Throwable e) {
+            } catch (Exception e) {
                 throw new DeserializationException("Failed to read item NBT from string (%s)".formatted(serialized), e);
             }
         }
@@ -151,7 +132,7 @@ public abstract class FabricSerializer {
         public String serialize(@NotNull FabricData.Items.EnderChest data) throws SerializationException {
             try {
                 return serializeItemArray(data.getContents(), (FabricHuskSync) getPlugin()).toString();
-            } catch (Throwable e) {
+            } catch (Exception e) {
                 throw new SerializationException("Failed to serialize ender chest item NBT to string", e);
             }
         }
@@ -160,140 +141,64 @@ public abstract class FabricSerializer {
     private interface ItemDeserializer {
 
         @NotNull
-        default ItemStack[] getItems(@NotNull NbtCompound tag, @NotNull Version mcVersion, @NotNull FabricHuskSync plugin) {
+        default ItemStack[] getItems(@NotNull CompoundTag tag, @NotNull Version mcVersion,
+                                    @NotNull FabricHuskSync plugin) {
             try {
-                if (mcVersion.compareTo(plugin.getMinecraftVersion()) < 0) {
-                    return upgradeItemStacks(tag, mcVersion, plugin);
+                final int size = tag.getIntOr("size", -1);
+                if (size != Data.Items.Inventory.INVENTORY_SLOT_COUNT
+                        && size != FabricData.Items.Inventory.SLOT_COUNT
+                        && size != Data.Items.EnderChest.ENDER_CHEST_SLOT_COUNT) {
+                    throw new IllegalArgumentException("Invalid stored item array size: " + size);
                 }
-
-                final DynamicRegistryManager registryManager = plugin.getMinecraftServer().getRegistryManager();
-                //#if MC<12105
-                //$$ final ItemStack[] contents = new ItemStack[tag.getInt("size")];
-                //$$ final NbtList itemList = tag.getList("items", NbtElement.COMPOUND_TYPE);
-                //$$ itemList.forEach(element -> {
-                //$$     final NbtCompound compound = (NbtCompound) element;
-                //$$     contents[compound.getInt("Slot")] = decodeNbt(element, registryManager);
-                //$$ });
-                //#else
-                final ItemStack[] contents = new ItemStack[tag.getInt("size", 0)];
-                final NbtList itemList = tag.getListOrEmpty("items");
-                itemList.forEach(element -> {
-                    final NbtCompound compound = (NbtCompound) element;
-                    int i = compound.getInt("Slot", -1);
-                    if (i >= 0) {
-                        contents[i] = decodeNbt(element, registryManager);
+                final ItemStack[] contents = new ItemStack[size];
+                final boolean[] occupied = new boolean[size];
+                final ListTag list = tag.getList("items")
+                        .orElseThrow(() -> new IllegalArgumentException("Missing item list"));
+                final var ops = plugin.getMinecraftServer().registryAccess().createSerializationContext(NbtOps.INSTANCE);
+                for (Tag element : list) {
+                    if (!(element instanceof CompoundTag entry)) {
+                        throw new IllegalArgumentException("Item entry is not a compound");
                     }
-                });
-                //#endif
-
+                    final int slot = entry.getIntOr("Slot", -1);
+                    if (slot < 0 || slot >= size || occupied[slot]) {
+                        throw new IllegalArgumentException("Invalid or duplicate item slot: " + slot);
+                    }
+                    occupied[slot] = true;
+                    final Tag item = mcVersion.compareTo(plugin.getMinecraftVersion()) < 0
+                            ? plugin.getMinecraftServer().getFixerUpper().update(
+                                    References.ITEM_STACK, new Dynamic<>(NbtOps.INSTANCE, entry),
+                                    plugin.getDataVersion(mcVersion), plugin.getDataVersion(plugin.getMinecraftVersion())
+                            ).getValue() : entry;
+                    contents[slot] = ItemStack.CODEC.parse(ops, item).getOrThrow();
+                }
                 return contents;
-            } catch (Throwable e) {
-                throw new Serializer.DeserializationException("Failed to read item NBT string (%s)".formatted(tag), e);
+            } catch (RuntimeException e) {
+                throw new Serializer.DeserializationException("Failed to deserialize stored item data", e);
             }
         }
 
-        // Serialize items slot-by-slot
         @NotNull
-        default NbtCompound serializeItemArray(@Nullable ItemStack @NotNull [] items, @NotNull FabricHuskSync plugin) {
-            final NbtCompound container = new NbtCompound();
+        default CompoundTag serializeItemArray(@Nullable ItemStack @NotNull [] items,
+                                                @NotNull FabricHuskSync plugin) {
+            final CompoundTag container = new CompoundTag();
             container.putInt("size", items.length);
-            final NbtList itemList = new NbtList();
-            final DynamicRegistryManager registryManager = plugin.getMinecraftServer().getRegistryManager();
-            final List<ItemStack> skipped = new ArrayList<>();
-            for (int i = 0; i < items.length; i++) {
-                final ItemStack item = items[i];
-                if (item == null || item.isEmpty() || item.getCount() < 1 || item.getCount() > 99) {
+            final ListTag list = new ListTag();
+            final var ops = plugin.getMinecraftServer().registryAccess().createSerializationContext(NbtOps.INSTANCE);
+            for (int slot = 0; slot < items.length; slot++) {
+                final ItemStack item = items[slot];
+                if (item == null || item.isEmpty()) {
                     continue;
                 }
-
-                final NbtCompound entry = encodeNbt(item, registryManager);
-                if (entry == null) {
-                    skipped.add(item);
-                    continue;
+                // Never save a partial inventory when a registry/component cannot be encoded.
+                final Tag encoded = ItemStack.CODEC.encodeStart(ops, item).getOrThrow();
+                if (!(encoded instanceof CompoundTag entry)) {
+                    throw new IllegalStateException("Item codec did not encode a compound at slot " + slot);
                 }
-                entry.putInt("Slot", i);
-                itemList.add(entry);
+                entry.putInt("Slot", slot);
+                list.add(entry);
             }
-            if (!skipped.isEmpty()) {
-                plugin.debug("Skipped serializing items in array: %s".formatted(Arrays.toString(skipped.toArray())));
-            }
-            container.put(ITEMS_TAG, itemList);
+            container.put(ITEMS_TAG, list);
             return container;
-        }
-
-        @NotNull
-        private ItemStack @NotNull [] upgradeItemStacks(@NotNull NbtCompound items, @NotNull Version mcVersion,
-                                                        @NotNull FabricHuskSync plugin) {
-            //#if MC<12105
-            //$$ final int size = items.getInt("size");
-            //$$ final NbtList list = items.getList("items", NbtElement.COMPOUND_TYPE);
-            //$$ final ItemStack[] itemStacks = new ItemStack[size];
-            //$$ final DynamicRegistryManager registryManager = plugin.getMinecraftServer().getRegistryManager();
-            //$$ Arrays.fill(itemStacks, ItemStack.EMPTY);
-            //$$ for (int i = 0; i < size; i++) {
-            //$$     if (list.getCompound(i) == null) {
-            //$$         continue;
-            //$$     }
-            //$$     final NbtCompound compound = list.getCompound(i);
-            //$$     final int slot = compound.getInt("Slot");
-            //$$     itemStacks[slot] = decodeNbt(upgradeItemData(list.getCompound(i), mcVersion, plugin), registryManager);
-            //$$ }
-            //#else
-            final int size = items.getInt("size", 0);
-            final NbtList list = items.getListOrEmpty("items");
-            final ItemStack[] itemStacks = new ItemStack[size];
-            final DynamicRegistryManager registryManager = plugin.getMinecraftServer().getRegistryManager();
-            Arrays.fill(itemStacks, ItemStack.EMPTY);
-            for (int i = 0; i < size; i++) {
-                final NbtCompound compound = list.getCompoundOrEmpty(i);
-                if (compound.isEmpty()) {
-                    continue;
-                }
-                final int slot = compound.getInt("Slot", -1);
-                if (slot >= 0) {
-                    itemStacks[slot] = decodeNbt(upgradeItemData(compound, mcVersion, plugin), registryManager);
-                }
-            }
-            //#endif
-            return itemStacks;
-        }
-
-        @NotNull
-        @SuppressWarnings({"rawtypes", "unchecked"}) // For NBTOps lookup
-        private NbtCompound upgradeItemData(@NotNull NbtCompound tag, @NotNull Version mcVersion,
-                                            @NotNull FabricHuskSync plugin) {
-            return (NbtCompound) plugin.getMinecraftServer().getDataFixer().update(
-                    TypeReferences.ITEM_STACK, new Dynamic<Object>((DynamicOps) NbtOps.INSTANCE, tag),
-                    plugin.getDataVersion(mcVersion), plugin.getDataVersion(plugin.getMinecraftVersion())
-            ).getValue();
-        }
-
-        @Nullable
-        private NbtCompound encodeNbt(@NotNull ItemStack item, @NotNull DynamicRegistryManager reg) {
-            try {
-                //#if MC>=12108
-                return (NbtCompound) ItemStack.CODEC.encodeStart(reg.getOps(NbtOps.INSTANCE), item).getOrThrow();
-                //#elseif MC>=12104
-                //$$ return (NbtCompound) item.toNbt(reg);
-                //#elseif MC==12101
-                //$$ return (NbtCompound) item.encode(reg);
-                //#endif
-            } catch (Throwable e) {
-                return null;
-            }
-        }
-
-        @NotNull
-        private ItemStack decodeNbt(@NotNull NbtElement item, @NotNull DynamicRegistryManager reg) {
-            //#if MC>=12108
-            final @Nullable ItemStack stack = ItemStack.CODEC.decode(reg.getOps(NbtOps.INSTANCE), item).getOrThrow().getFirst();
-            //#else
-            //$$ final @Nullable ItemStack stack = ItemStack.fromNbt(reg, item).orElse(null);
-            //#endif
-            if (stack == null) {
-                throw new IllegalStateException("Failed to decode item NBT (decode got null): (%s)".formatted(item));
-            }
-            return stack;
         }
 
     }

@@ -21,9 +21,9 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.InteractionResult;
 import org.jetbrains.annotations.NotNull;
 
 public interface InventoryClickCallback {
@@ -32,17 +32,17 @@ public interface InventoryClickCallback {
     Event<InventoryClickCallback> EVENT = EventFactory.createArrayBacked(InventoryClickCallback.class,
             (listeners) -> (player, itemStack) -> {
                 for (InventoryClickCallback listener : listeners) {
-                    ActionResult result = listener.interact(player, itemStack);
+                    InteractionResult result = listener.interact(player, itemStack);
 
-                    if (result != ActionResult.PASS) {
+                    if (result != InteractionResult.PASS) {
                         return result;
                     }
                 }
 
-                return ActionResult.PASS;
+                return InteractionResult.PASS;
             });
 
     @NotNull
-    ActionResult interact(PlayerEntity player, ItemStack sheep);
+    InteractionResult interact(Player player, ItemStack sheep);
 
 }

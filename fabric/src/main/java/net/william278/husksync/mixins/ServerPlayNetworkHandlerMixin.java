@@ -19,17 +19,17 @@
 
 package net.william278.husksync.mixins;
 
-import net.minecraft.item.ItemStack;
-import net.minecraft.network.packet.Packet;
-import net.minecraft.network.packet.c2s.play.ClickSlotC2SPacket;
-import net.minecraft.network.packet.c2s.play.CommandExecutionC2SPacket;
-import net.minecraft.network.packet.c2s.play.CreativeInventoryActionC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
-import net.minecraft.network.packet.s2c.play.ScreenHandlerSlotUpdateS2CPacket;
-import net.minecraft.server.network.ServerPlayNetworkHandler;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Hand;
+import net.minecraft.network.chat.LastSeenMessages;
+import net.minecraft.network.protocol.game.ServerboundChatCommandSignedPacket;
+import net.minecraft.network.protocol.game.ServerboundContainerClickPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.ItemStack;
+import net.william278.husksync.event.InventoryClickCallback;
 import net.william278.husksync.event.ItemDropCallback;
 import net.william278.husksync.event.PlayerCommandCallback;
 import org.spongepowered.asm.mixin.Mixin;
@@ -40,78 +40,82 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 // Adapted from simplerauth (https://github.com/lolicode-org/simplerauth), which is licensed under the MIT License
-@Mixin(ServerPlayNetworkHandler.class)
+@Mixin(ServerGamePacketListenerImpl.class)
 public abstract class ServerPlayNetworkHandlerMixin {
+
     @Shadow
-    public ServerPlayerEntity player;
+    public ServerPlayer player;
+
+    // Run after vanilla's thread handoff, before any inventory mutation. Menu synchronization corrects
+    // all predicted slots and the actual carried stack, including outside-window clicks and creative drops.
+    @Inject(method = "handlePlayerAction(Lnet/minecraft/network/protocol/game/ServerboundPlayerActionPacket;)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/server/level/ServerLevel;)V",
+                    shift = At.Shift.AFTER), cancellable = true)
+    private void onPlayerAction(ServerboundPlayerActionPacket packet, CallbackInfo ci) {
+        final ItemStack stack = player.getMainHandItem();
+        final InteractionResult result = switch (packet.getAction()) {
+            case DROP_ITEM, DROP_ALL_ITEMS -> ItemDropCallback.EVENT.invoker().interact(player, stack);
+            case SWAP_ITEM_WITH_OFFHAND -> InventoryClickCallback.EVENT.invoker().interact(player, stack);
+            default -> InteractionResult.PASS;
+        };
+        if (result == InteractionResult.FAIL) {
+            ci.cancel();
+            husksync$resendInventory();
+        }
+    }
+
+    @Inject(method = "handleContainerClick(Lnet/minecraft/network/protocol/game/ServerboundContainerClickPacket;)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/server/level/ServerLevel;)V",
+                    shift = At.Shift.AFTER), cancellable = true)
+    private void onInventoryClick(ServerboundContainerClickPacket packet, CallbackInfo ci) {
+        final AbstractContainerMenu menu = player.containerMenu;
+        final int slot = packet.slotNum();
+        final ItemStack stack = slot >= 0 && slot < menu.slots.size()
+                ? menu.getSlot(slot).getItem() : menu.getCarried();
+        if (InventoryClickCallback.EVENT.invoker().interact(player, stack) == InteractionResult.FAIL) {
+            ci.cancel();
+            husksync$resendInventory();
+        }
+    }
+
+    @Inject(method = "handleSetCreativeModeSlot(Lnet/minecraft/network/protocol/game/ServerboundSetCreativeModeSlotPacket;)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/network/protocol/PacketUtils;ensureRunningOnSameThread(Lnet/minecraft/network/protocol/Packet;Lnet/minecraft/network/PacketListener;Lnet/minecraft/server/level/ServerLevel;)V",
+                    shift = At.Shift.AFTER), cancellable = true)
+    private void onCreativeInventoryClick(ServerboundSetCreativeModeSlotPacket packet, CallbackInfo ci) {
+        final InteractionResult result = packet.slotNum() < 0
+                ? ItemDropCallback.EVENT.invoker().interact(player, packet.itemStack())
+                : InventoryClickCallback.EVENT.invoker().interact(player, packet.itemStack());
+        if (result == InteractionResult.FAIL) {
+            ci.cancel();
+            husksync$resendInventory();
+        }
+    }
 
     @Unique
-    private void sendToPlayer(Packet<?> packet) {
-        this.player.networkHandler.sendPacket(packet);
-    }
-
-    @Inject(method = "onPlayerAction", at = @At("HEAD"), cancellable = true)
-    public void onPlayerAction(PlayerActionC2SPacket packet, CallbackInfo ci) {
-        if (packet.getAction() == PlayerActionC2SPacket.Action.DROP_ITEM
-                || packet.getAction() == PlayerActionC2SPacket.Action.DROP_ALL_ITEMS) {
-            ItemStack stack = player.getStackInHand(Hand.MAIN_HAND);
-            ActionResult result = ItemDropCallback.EVENT.invoker().interact(player, stack);
-
-            if (result == ActionResult.FAIL) {
-                ci.cancel();
-                sendToPlayer(new ScreenHandlerSlotUpdateS2CPacket(
-                        -2,
-                        1,
-                        player.getInventory().getSlotWithStack(stack),
-                        stack
-                ));
-            }
+    private void husksync$resendInventory() {
+        player.inventoryMenu.sendAllDataToRemote();
+        if (player.containerMenu != player.inventoryMenu) {
+            player.containerMenu.sendAllDataToRemote();
         }
     }
 
-    @Inject(method = "onClickSlot", at = @At("HEAD"), cancellable = true)
-    public void onClickSlot(ClickSlotC2SPacket packet, CallbackInfo ci) {
-        //#if MC<12105
-        //$$ int slot = packet.getSlot();
-        //#else
-        int slot = packet.slot();
-        //#endif
-        if (slot < 0) {
-            return;
-        }
-
-        ItemStack stack = this.player.getInventory().getStack(slot);
-        ActionResult result = ItemDropCallback.EVENT.invoker().interact(player, stack);
-
-        if (result == ActionResult.FAIL) {
+    // Both methods run on the server thread. For signed commands, preserve signature-chain decoding
+    // before cancelling execution so that the player's next signed message remains valid.
+    @Inject(method = "performUnsignedChatCommand(Ljava/lang/String;)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/commands/Commands;performCommand(Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)V"),
+            cancellable = true)
+    private void onUnsignedCommand(String command, CallbackInfo ci) {
+        if (PlayerCommandCallback.EVENT.invoker().interact(player, command) == InteractionResult.FAIL) {
             ci.cancel();
-            sendToPlayer(new ScreenHandlerSlotUpdateS2CPacket(-2, 1, slot, stack));
-            sendToPlayer(new ScreenHandlerSlotUpdateS2CPacket(-1, 1, -1, ItemStack.EMPTY));
         }
     }
 
-    @Inject(method = "onCreativeInventoryAction", at = @At("HEAD"), cancellable = true)
-    public void onCreativeInventoryAction(CreativeInventoryActionC2SPacket packet, CallbackInfo ci) {
-        int slot = packet.slot();
-        if (slot < 0) {
-            return;
-        }
-
-        ItemStack stack = this.player.getInventory().getStack(slot);
-        ActionResult result = ItemDropCallback.EVENT.invoker().interact(player, stack);
-
-        if (result == ActionResult.FAIL) {
-            ci.cancel();
-            sendToPlayer(new ScreenHandlerSlotUpdateS2CPacket(-2, 1, slot, stack));
-            sendToPlayer(new ScreenHandlerSlotUpdateS2CPacket(-1, 1, -1, ItemStack.EMPTY));
-        }
-    }
-
-    @Inject(method = "onCommandExecution", at = @At("HEAD"), cancellable = true)
-    public void onCommandExecution(CommandExecutionC2SPacket packet, CallbackInfo ci) {
-        ActionResult result = PlayerCommandCallback.EVENT.invoker().interact(player, packet.command());
-
-        if (result == ActionResult.FAIL) {
+    @Inject(method = "performSignedChatCommand(Lnet/minecraft/network/protocol/game/ServerboundChatCommandSignedPacket;Lnet/minecraft/network/chat/LastSeenMessages;)V",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/commands/Commands;performCommand(Lcom/mojang/brigadier/ParseResults;Ljava/lang/String;)V"),
+            cancellable = true)
+    private void onSignedCommand(ServerboundChatCommandSignedPacket packet, LastSeenMessages lastSeenMessages,
+                                 CallbackInfo ci) {
+        if (PlayerCommandCallback.EVENT.invoker().interact(player, packet.command()) == InteractionResult.FAIL) {
             ci.cancel();
         }
     }

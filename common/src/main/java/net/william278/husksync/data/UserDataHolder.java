@@ -73,11 +73,25 @@ public interface UserDataHolder extends DataHolder {
      *
      * @param saveCause the cause of the snapshot
      * @return the snapshot
+     * @throws IllegalStateException if the platform requires the server thread and this is called asynchronously
      * @since 3.0
      */
     @NotNull
     default DataSnapshot.Packed createSnapshot(@NotNull DataSnapshot.SaveCause saveCause) {
+        if (requiresSnapshotOnEventThread() && !getPlugin().isEventThread()) {
+            throw new IllegalStateException("Player snapshots must be captured on the server thread");
+        }
         return DataSnapshot.builder(getPlugin()).data(this.getData()).saveCause(saveCause).buildAndPack();
+    }
+
+    /**
+     * Whether reading this platform's live player data requires the server event thread.
+     *
+     * @return whether snapshot callers must first schedule onto the server thread
+     */
+    @ApiStatus.Internal
+    default boolean requiresSnapshotOnEventThread() {
+        return false;
     }
 
     /**

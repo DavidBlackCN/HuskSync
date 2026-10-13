@@ -148,6 +148,21 @@ public abstract class OnlineUser extends User implements CommandUser, UserDataHo
      * @param plugin    The plugin instance
      */
     public void completeSync(boolean succeeded, @NotNull DataSnapshot.UpdateCause cause, @NotNull HuskSync plugin) {
+        if (hasDisconnected()) {
+            return;
+        }
+        // Completion can arrive from a worker after disconnect/reconnect. Check and mutate the session lock
+        // on the server thread, where connection changes cannot race the final unlock.
+        plugin.runSync(() -> finishSync(succeeded, cause, plugin), this);
+
+        // Keep database work on the calling thread rather than the scheduled server task.
+        plugin.getDatabase().ensureUser(this);
+    }
+
+    private void finishSync(boolean succeeded, @NotNull DataSnapshot.UpdateCause cause, @NotNull HuskSync plugin) {
+        if (hasDisconnected()) {
+            return;
+        }
         if (succeeded) {
             try {
                 switch (plugin.getSettings().getSynchronization().getNotificationDisplaySlot()) {
@@ -158,10 +173,10 @@ public abstract class OnlineUser extends User implements CommandUser, UserDataHo
                 plugin.log(Level.WARNING,
                         String.format("Failed to send sync complete notification to %s", getName()), e);
             }
-            plugin.fireEvent(
-                    plugin.getSyncCompleteEvent(this),
-                    (event) -> plugin.unlockPlayer(getUuid())
-            );
+            // Listeners may disconnect the user themselves, so recheck after dispatch as well.
+            if (!plugin.fireIsCancelled(plugin.getSyncCompleteEvent(this)) && !hasDisconnected()) {
+                plugin.unlockPlayer(getUuid());
+            }
         } else {
             try {
                 cause.getFailedLocale(plugin).ifPresent(this::sendMessage);
@@ -170,9 +185,6 @@ public abstract class OnlineUser extends User implements CommandUser, UserDataHo
                         String.format("Failed to send sync failure notification to %s", getName()), e);
             }
         }
-
-        // Ensure the user is in the database
-        plugin.getDatabase().ensureUser(this);
     }
 
     @NotNull

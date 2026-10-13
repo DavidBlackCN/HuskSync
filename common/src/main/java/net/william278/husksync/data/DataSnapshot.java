@@ -395,11 +395,17 @@ public class DataSnapshot {
             data.entrySet().stream()
                     .filter(e -> plugin.getIdentifier(e.getKey()).isPresent())
                     .map(entry -> Map.entry(plugin.getIdentifier(entry.getKey()).orElseThrow(), entry.getValue()))
+                    .filter(entry -> !plugin.isStrictSnapshotDeserialization() || entry.getKey().isEnabled())
                     .forEach(entry -> {
                         try {
                             result.put(entry.getKey(), plugin.deserializeData(
                                     entry.getKey(), entry.getValue(), getMinecraftVersion()));
                         } catch (Throwable e) {
+                            if (plugin.isStrictSnapshotDeserialization()) {
+                                throw new Serializer.DeserializationException(
+                                        "Failed to deserialize %s data for snapshot %s; refusing partial restore"
+                                                .formatted(entry.getKey(), getId()), e);
+                            }
                             plugin.log(Level.WARNING,
                                     ("Failed to deserialize %s data for snapshot %s; skipping it. "
                                             + "The data may contain invalid values (e.g. items with -Infinity NBT attributes). "

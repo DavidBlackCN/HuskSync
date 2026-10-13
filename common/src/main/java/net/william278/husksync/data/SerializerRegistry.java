@@ -44,6 +44,16 @@ public interface SerializerRegistry {
     <T extends Data> Map<Identifier, Serializer<T>> getSerializers();
 
     /**
+     * Whether a snapshot must be rejected when an enabled data type cannot be decoded.
+     * Platforms with modded registries can opt in to prevent partial restores from replacing
+     * stored data with a player's stale local state. Unknown and disabled types are ignored.
+     */
+    @ApiStatus.Internal
+    default boolean isStrictSnapshotDeserialization() {
+        return false;
+    }
+
+    /**
      * Register a data serializer for the given {@link Identifier}
      *
      * @param id         the {@link Identifier}

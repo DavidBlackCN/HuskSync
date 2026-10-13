@@ -20,21 +20,19 @@
 package net.william278.husksync.user;
 
 import eu.pb4.sgui.api.ClickType;
-import eu.pb4.sgui.api.elements.GuiElementInterface;
+import eu.pb4.sgui.api.elements.GuiElement;
 import eu.pb4.sgui.api.gui.SimpleGui;
 import me.lucko.fabric.api.permissions.v0.Permissions;
 import net.kyori.adventure.audience.Audience;
-import net.kyori.adventure.text.Component;
-//#if MC>=12104
 import net.kyori.adventure.platform.modcommon.MinecraftServerAudiences;
-//#else
-//$$ import net.kyori.adventure.platform.fabric.FabricServerAudiences;
-//#endif
-import net.minecraft.item.ItemStack;
-import net.minecraft.screen.GenericContainerScreenHandler;
-import net.minecraft.screen.ScreenHandlerType;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.kyori.adventure.text.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.MenuType;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.data.Data;
@@ -43,36 +41,38 @@ import net.william278.husksync.data.FabricUserDataHolder;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
 public class FabricUser extends OnlineUser implements FabricUserDataHolder {
 
     private final HuskSync plugin;
-    private final ServerPlayerEntity player;
+    private volatile ServerPlayer player;
 
-    private FabricUser(@NotNull ServerPlayerEntity player, @NotNull HuskSync plugin) {
-        super(player.getUuid(), player.getName().getString());
+    private FabricUser(@NotNull ServerPlayer player, @NotNull HuskSync plugin) {
+        super(player.getUUID(), player.getName().getString());
         this.player = player;
         this.plugin = plugin;
     }
 
     @NotNull
     @ApiStatus.Internal
-    public static FabricUser adapt(@NotNull ServerPlayerEntity player, @NotNull HuskSync plugin) {
-        return new FabricUser(player, plugin);
+    public static FabricUser adapt(@NotNull ServerPlayer player, @NotNull HuskSync plugin) {
+        final FabricUser existing = ((FabricHuskSync) plugin).getPlayerMap().get(player.getUUID());
+        return existing != null && existing.getPlayer() == player ? existing : new FabricUser(player, plugin);
     }
 
     @Override
     public boolean hasDisconnected() {
-        return getPlugin().getDisconnectingPlayers().contains(getUuid())
-                || player == null || player.isDisconnected();
+        return ((FabricHuskSync) plugin).getPlayerMap().get(getUuid()) != this
+                || plugin.getDisconnectingPlayers().contains(getUuid()) || player.hasDisconnected();
     }
 
     @NotNull
     @Override
     public Audience getAudience() {
-        return plugin.getAudiences().player(player.getUuid());
+        return plugin.getAudiences().player(getUuid());
     }
 
     @Override
@@ -85,67 +85,85 @@ public class FabricUser extends OnlineUser implements FabricUserDataHolder {
     }
 
     @Override
-    public void showGui(@NotNull Data.Items.Items items, @NotNull Component title, boolean editable, int size,
+    public void showGui(@NotNull Data.Items items, @NotNull Component title, boolean editable, int size,
                         @NotNull Consumer<Data.Items> onClose) {
-        plugin.runSync(
-                () -> new ItemViewerGui(size, player, title, (FabricData.Items) items, onClose, editable, plugin).open()
-        );
+        plugin.runSync(() -> {
+            if (!hasDisconnected()) {
+                new ItemViewerGui(size, player, title, (FabricData.Items) items, onClose, editable, plugin).open();
+            }
+        }, this);
     }
 
     private static class ItemViewerGui extends SimpleGui {
 
         private final Consumer<Data.Items> onClose;
-        private final int size;
+        private final SimpleContainer contents;
         private final boolean editable;
+        private boolean saved;
 
-        public ItemViewerGui(int size, @NotNull ServerPlayerEntity player, @NotNull Component title,
-                             @NotNull FabricData.Items items, @NotNull Consumer<Data.Items> onClose,
-                             boolean editable, @NotNull HuskSync plugin) {
-            super(getScreenHandler(size), player, false);
+        private ItemViewerGui(int size, @NotNull ServerPlayer player, @NotNull Component title,
+                              @NotNull FabricData.Items items, @NotNull Consumer<Data.Items> onClose,
+                              boolean editable, @NotNull HuskSync plugin) {
+            super(getMenuType(size), player, false);
             this.onClose = onClose;
-            this.size = size;
             this.editable = editable;
+            this.contents = new SimpleContainer(size);
+            setTitle(((MinecraftServerAudiences) plugin.getAudiences()).asNative(title));
+            setLockPlayerInventory(!editable);
+            final ItemStack[] source = items.getContents();
+            for (int slot = 0; slot < size; slot++) {
+                contents.setItem(slot, slot < source.length && source[slot] != null
+                        ? source[slot].copy() : ItemStack.EMPTY);
+                // Real backing slots allow SGUI 2 to preserve edits, hotbar swaps, and shift-clicks.
+                // The remaining cells in the final GUI row are left as non-interactive virtual slots.
+                setSlot(slot, new Slot(contents, slot, 0, 0) {
+                    @Override
+                    public boolean mayPlace(ItemStack stack) {
+                        return editable;
+                    }
 
-            // Set title, items
-            //#if MC>=12104
-            this.setTitle(((MinecraftServerAudiences) plugin.getAudiences()).asNative(title));
-            //#else
-            //$$ this.setTitle(((FabricServerAudiences) plugin.getAudiences()).toNative(title));
-            //#endif
-            this.setLockPlayerInventory(!editable);
-            for (int i = 0; i < size; i++) {
-                final ItemStack item = items.getContents()[i];
-                this.setSlot(i, item == null ? ItemStack.EMPTY : item);
+                    @Override
+                    public boolean mayPickup(Player viewer) {
+                        return editable;
+                    }
+                });
             }
         }
 
         @Override
-        public void onClose() {
-            final ItemStack[] contents = new ItemStack[size];
-            for (int i = 0; i < size; i++) {
-                contents[i] = this.getSlot(i) == null ? null : this.getSlot(i).getItemStack();
+        public void onRemoved() {
+            if (saved) {
+                return;
             }
-            onClose.accept(FabricData.Items.ItemArray.adapt(contents));
+            saved = true;
+            final ItemStack[] result = new ItemStack[contents.getContainerSize()];
+            for (int slot = 0; slot < result.length; slot++) {
+                result[slot] = contents.getItem(slot).copy();
+            }
+            onClose.accept(FabricData.Items.ItemArray.adapt(result));
         }
 
         @Override
-        public boolean onAnyClick(int index, @NotNull ClickType type, @NotNull SlotActionType action) {
+        public boolean onAnyClick(int index, @NotNull ClickType type, @NotNull ContainerInput action) {
             return editable;
         }
 
         @Override
-        public boolean onClick(int index, @NotNull ClickType type, @NotNull SlotActionType action,
-                               @NotNull GuiElementInterface element) {
-            return editable;
+        public boolean onClick(int index, @NotNull ClickType type, @NotNull ContainerInput action,
+                               @NotNull GuiElement element) {
+            return false;
         }
 
         @NotNull
-        private static ScreenHandlerType<GenericContainerScreenHandler> getScreenHandler(int size) {
-            return switch (size / 9 + (size % 9 == 0 ? 0 : 1)) {
-                case 3 -> ScreenHandlerType.GENERIC_9X3;
-                case 4 -> ScreenHandlerType.GENERIC_9X4;
-                case 5 -> ScreenHandlerType.GENERIC_9X5;
-                default -> ScreenHandlerType.GENERIC_9X6;
+        private static MenuType<?> getMenuType(int size) {
+            return switch ((size + 8) / 9) {
+                case 1 -> MenuType.GENERIC_9x1;
+                case 2 -> MenuType.GENERIC_9x2;
+                case 3 -> MenuType.GENERIC_9x3;
+                case 4 -> MenuType.GENERIC_9x4;
+                case 5 -> MenuType.GENERIC_9x5;
+                case 6 -> MenuType.GENERIC_9x6;
+                default -> throw new IllegalArgumentException("Unsupported inventory GUI size: " + size);
             };
         }
     }
@@ -155,7 +173,7 @@ public class FabricUser extends OnlineUser implements FabricUserDataHolder {
         final boolean requiresOp = Boolean.TRUE.equals(
                 ((FabricHuskSync) plugin).getPermissions().getOrDefault(node, true)
         );
-        return Permissions.check(player, node, !requiresOp || player.hasPermissionLevel(3));
+        return requiresOp ? Permissions.check(player, node, 3) : Permissions.check(player, node, true);
     }
 
     @Override
@@ -165,7 +183,7 @@ public class FabricUser extends OnlineUser implements FabricUserDataHolder {
 
     @Override
     public boolean isLocked() {
-        return plugin.getLockedPlayers().contains(player.getUuid());
+        return plugin.isLocked(getUuid());
     }
 
     @Override
@@ -173,10 +191,18 @@ public class FabricUser extends OnlineUser implements FabricUserDataHolder {
         return false;
     }
 
-    @Override
     @NotNull
-    public ServerPlayerEntity getPlayer() {
+    @Override
+    public ServerPlayer getPlayer() {
         return player;
+    }
+
+    @Override
+    public void setPlayer(@NotNull ServerPlayer player) {
+        if (!getUuid().equals(player.getUUID())) {
+            throw new IllegalArgumentException("Cannot replace a user with a different player UUID");
+        }
+        this.player = Objects.requireNonNull(player, "player");
     }
 
     @NotNull

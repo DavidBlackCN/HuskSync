@@ -20,32 +20,23 @@
 package net.william278.husksync.mixins;
 
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.world.ServerWorld;
+import net.minecraft.server.level.ServerLevel;
 import net.william278.husksync.event.WorldSaveCallback;
-import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(ServerWorld.class)
+@Mixin(ServerLevel.class)
 public class ServerWorldMixin {
 
-    @Final
-    @Shadow
-    private MinecraftServer server;
-
-    //#if MC>=12104
-    @Inject(method = "savePersistentState", at = @At("HEAD"))
-    //#else
-    //$$ @Inject(method = "saveLevel", at = @At("HEAD"))
-    //#endif
-    public void saveLevel(CallbackInfo ci) {
-        if (server.isStopping() || server.isStopped()) {
-            return;
+    @Inject(method = "saveLevelData(Z)V", at = @At("HEAD"))
+    private void onWorldSave(boolean flush, CallbackInfo ci) {
+        final ServerLevel level = (ServerLevel) (Object) this;
+        final MinecraftServer server = level.getServer();
+        if (server.isRunning() && !server.isStopped()) {
+            WorldSaveCallback.EVENT.invoker().save(level);
         }
-        WorldSaveCallback.EVENT.invoker().save((ServerWorld) (Object) this);
     }
 
 }

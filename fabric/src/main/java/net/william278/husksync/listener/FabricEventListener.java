@@ -20,32 +20,30 @@
 package net.william278.husksync.listener;
 
 import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
+import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.minecraft.block.BlockState;
-import net.minecraft.block.entity.BlockEntity;
-import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.entity.damage.DamageSource;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.network.ServerPlayNetworkHandler;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.ActionResult;
-import net.minecraft.util.Hand;
-//#if MC<12104
-//$$ import net.minecraft.util.TypedActionResult;
-//#endif
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.World;
+import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.config.Settings.SynchronizationSettings.SaveOnDeathSettings;
@@ -66,6 +64,11 @@ public class FabricEventListener extends EventListener implements LockedHandler 
     public void registerEvents() {
         ServerPlayConnectionEvents.JOIN.register(this::handlePlayerJoin);
         ServerPlayConnectionEvents.DISCONNECT.register(this::handlePlayerQuit);
+        ServerPlayerEvents.AFTER_RESPAWN.register((oldPlayer, newPlayer, alive) ->
+                ((FabricHuskSync) plugin).getPlayerMap().computeIfPresent(newPlayer.getUUID(), (uuid, user) -> {
+                    user.setPlayer(newPlayer);
+                    return user;
+                }));
         WorldSaveCallback.EVENT.register(this::handleWorldSave);
         PlayerDeathDropsCallback.EVENT.register(this::handlePlayerDeathDrops);
 
@@ -81,27 +84,27 @@ public class FabricEventListener extends EventListener implements LockedHandler 
         PlayerCommandCallback.EVENT.register(this::handlePlayerCommand);
     }
 
-    private void handlePlayerJoin(@NotNull ServerPlayNetworkHandler handler, @NotNull PacketSender sender,
+    private void handlePlayerJoin(@NotNull ServerGamePacketListenerImpl handler, @NotNull PacketSender sender,
                                   @NotNull MinecraftServer server) {
         final FabricUser user = FabricUser.adapt(handler.player, plugin);
-        ((FabricHuskSync) plugin).getPlayerMap().put(handler.player.getUuid(), user);
+        ((FabricHuskSync) plugin).getPlayerMap().put(handler.player.getUUID(), user);
         handlePlayerJoin(user);
     }
 
-    private void handlePlayerQuit(@NotNull ServerPlayNetworkHandler handler, @NotNull MinecraftServer server) {
-        ((FabricHuskSync) plugin).getPlayerMap().remove(handler.player.getUuid());
+    private void handlePlayerQuit(@NotNull ServerGamePacketListenerImpl handler, @NotNull MinecraftServer server) {
+        ((FabricHuskSync) plugin).getPlayerMap().remove(handler.player.getUUID());
         final OnlineUser user = FabricUser.adapt(handler.player, plugin);
         handlePlayerQuit(user); // Mark disconnecting, lock, mark for saving
         saveOnPlayerQuit(user); // Take snapshot and save, if marked above
     }
 
-    private void handleWorldSave(@NotNull ServerWorld world) {
+    private void handleWorldSave(@NotNull ServerLevel world) {
         this.saveOnWorldSave(
-                world.getPlayers().stream().map(player -> (OnlineUser) FabricUser.adapt(player, plugin)).toList()
+                world.players().stream().map(player -> (OnlineUser) FabricUser.adapt(player, plugin)).toList()
         );
     }
 
-    private void handlePlayerDeathDrops(@NotNull ServerPlayerEntity player, @Nullable ItemStack @NotNull [] toKeep,
+    private void handlePlayerDeathDrops(@NotNull ServerPlayer player, @Nullable ItemStack @NotNull [] toKeep,
                                         @Nullable ItemStack @NotNull [] toDrop) {
         final SaveOnDeathSettings settings = plugin.getSettings().getSynchronization().getSaveOnDeath();
         this.saveOnPlayerDeath(
@@ -112,50 +115,46 @@ public class FabricEventListener extends EventListener implements LockedHandler 
         );
     }
 
-    private ActionResult handleItemPickup(PlayerEntity player, ItemStack itemStack) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleItemPickup(Player player, ItemStack itemStack) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
-    private ActionResult handleItemDrop(PlayerEntity player, ItemStack itemStack) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleItemDrop(Player player, ItemStack itemStack) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
-    private ActionResult handleBlockInteract(PlayerEntity player, World world, Hand hand, BlockHitResult blockHitResult) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleBlockInteract(Player player, Level world, InteractionHand hand, BlockHitResult blockHitResult) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
-    private ActionResult handleEntityInteract(PlayerEntity player, World world, Hand hand, Entity entity, EntityHitResult entityHitResult) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleEntityInteract(Player player, Level world, InteractionHand hand, Entity entity, EntityHitResult entityHitResult) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
-    //#if MC>=12104
-    private ActionResult handleItemInteract(PlayerEntity player, World world, Hand hand) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleItemInteract(Player player, Level world, InteractionHand hand) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
-    //#else
-    //$$ private TypedActionResult<ItemStack> handleItemInteract(PlayerEntity player, World world, Hand hand) {
-    //$$     final ItemStack stackInHand = player.getStackInHand(hand);
-    //$$     return (cancelPlayerEvent(player.getUuid())) ? TypedActionResult.fail(stackInHand) : TypedActionResult.pass(stackInHand);
-    //$$ }
-    //#endif
 
-    private boolean handleBlockBreak(World world, PlayerEntity player, BlockPos blockPos, BlockState blockState, BlockEntity blockEntity) {
-        return !cancelPlayerEvent(player.getUuid());
+
+    private boolean handleBlockBreak(Level world, Player player, BlockPos blockPos, BlockState blockState, BlockEntity blockEntity) {
+        return !cancelPlayerEvent(player.getUUID());
     }
 
     private boolean handleEntityDamage(LivingEntity livingEntity, DamageSource damageSource, float v) {
-        if (livingEntity instanceof ServerPlayerEntity player) {
-            return !cancelPlayerEvent(player.getUuid());
+        if (livingEntity instanceof ServerPlayer player) {
+            return !cancelPlayerEvent(player.getUUID());
         }
         return true;
     }
 
-    private ActionResult handleInventoryClick(PlayerEntity player, ItemStack itemStack) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handleInventoryClick(Player player, ItemStack itemStack) {
+        return (cancelPlayerEvent(player.getUUID())) ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
-    private ActionResult handlePlayerCommand(PlayerEntity player, String s) {
-        return (cancelPlayerEvent(player.getUuid())) ? ActionResult.FAIL : ActionResult.PASS;
+    private InteractionResult handlePlayerCommand(Player player, String command) {
+        final String label = command.split(" ", 2)[0];
+        return isCommandDisabled(label) && cancelPlayerEvent(player.getUUID())
+                ? InteractionResult.FAIL : InteractionResult.PASS;
     }
 
     @Override

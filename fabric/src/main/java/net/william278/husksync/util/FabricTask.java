@@ -20,69 +20,113 @@
 package net.william278.husksync.util;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import net.minecraft.server.MinecraftServer;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.data.UserDataHolder;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.concurrent.*;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 public interface FabricTask extends Task {
-    ScheduledExecutorService ASYNC_EXEC = Executors.newScheduledThreadPool(4,
-            new ThreadFactoryBuilder()
-                    .setDaemon(true)
-                    .setNameFormat("HuskSync-ThreadPool")
-                    .build());
+
+    static ScheduledExecutorService createExecutor() {
+        final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(4,
+                new ThreadFactoryBuilder().setDaemon(true).setNameFormat("HuskSync-Task-%d").build());
+        executor.setRemoveOnCancelPolicy(true);
+        executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        return executor;
+    }
+
+    default ScheduledExecutorService getExecutor() {
+        return ((FabricHuskSync) getPlugin()).getTaskExecutor();
+    }
+
+    static void execute(@NotNull HuskSync plugin, @NotNull Runnable runnable) {
+        try {
+            runnable.run();
+        } catch (RuntimeException | Error exception) {
+            plugin.log(Level.SEVERE, "HuskSync task failed", exception);
+            throw exception;
+        }
+    }
 
     class Sync extends Task.Sync implements FabricTask {
+
+        private volatile boolean stopped;
+        private ScheduledFuture<?> task;
 
         protected Sync(@NotNull HuskSync plugin, @NotNull Runnable runnable, long delayTicks) {
             super(plugin, runnable, delayTicks);
         }
 
         @Override
-        public void cancel() {
+        public synchronized void cancel() {
+            stopped = true;
+            if (task != null) {
+                task.cancel(false);
+            }
             super.cancel();
         }
 
         @Override
-        public void run() {
-            if (!cancelled) {
-                ASYNC_EXEC.schedule(
-                        () -> ((FabricHuskSync) getPlugin()).getMinecraftServer().executeSync(runnable),
-                        delayTicks * 50,
-                        TimeUnit.MILLISECONDS
-                );
+        public synchronized void run() {
+            if (stopped) {
+                return;
+            }
+            final MinecraftServer server = ((FabricHuskSync) plugin).getMinecraftServer();
+            final Runnable enqueue = () -> server.execute(() -> {
+                if (!stopped && !server.isStopped() && !getExecutor().isShutdown()) {
+                    FabricTask.execute(plugin, runnable);
+                }
+            });
+            if (delayTicks <= 0) {
+                enqueue.run();
+            } else {
+                task = getExecutor().schedule(enqueue, Math.multiplyExact(delayTicks, 50), TimeUnit.MILLISECONDS);
             }
         }
     }
 
     class Async extends Task.Async implements FabricTask {
-        private CompletableFuture<Void> task;
+
+        private volatile boolean stopped;
+        private ScheduledFuture<?> task;
 
         protected Async(@NotNull HuskSync plugin, @NotNull Runnable runnable, long delayTicks) {
             super(plugin, runnable, delayTicks);
         }
 
         @Override
-        public void cancel() {
-            if (task != null && !cancelled) {
+        public synchronized void cancel() {
+            stopped = true;
+            if (task != null) {
                 task.cancel(true);
             }
             super.cancel();
         }
 
         @Override
-        public void run() {
-            if (!cancelled) {
-                this.task = CompletableFuture.runAsync(runnable, ASYNC_EXEC);
+        public synchronized void run() {
+            if (!stopped) {
+                task = getExecutor().schedule(() -> {
+                    if (!stopped) {
+                        FabricTask.execute(plugin, runnable);
+                    }
+                }, Math.multiplyExact(Math.max(0, delayTicks), 50), TimeUnit.MILLISECONDS);
             }
         }
     }
 
     class Repeating extends Task.Repeating implements FabricTask {
 
+        private volatile boolean stopped;
         private ScheduledFuture<?> task;
 
         protected Repeating(@NotNull HuskSync plugin, @NotNull Runnable runnable, long repeatingTicks) {
@@ -90,22 +134,22 @@ public interface FabricTask extends Task {
         }
 
         @Override
-        public void cancel() {
-            if (task != null && !cancelled) {
+        public synchronized void cancel() {
+            stopped = true;
+            if (task != null) {
                 task.cancel(true);
             }
             super.cancel();
         }
 
         @Override
-        public void run() {
-            if (!cancelled) {
-                this.task = ASYNC_EXEC.scheduleAtFixedRate(
-                        runnable,
-                        0,
-                        repeatingTicks * 50,
-                        TimeUnit.MILLISECONDS
-                );
+        public synchronized void run() {
+            if (!stopped) {
+                task = getExecutor().scheduleAtFixedRate(() -> {
+                    if (!stopped) {
+                        FabricTask.execute(plugin, runnable);
+                    }
+                }, 0, Math.multiplyExact(repeatingTicks, 50), TimeUnit.MILLISECONDS);
             }
         }
     }
@@ -132,7 +176,7 @@ public interface FabricTask extends Task {
 
         @Override
         default void cancelTasks() {
-            ASYNC_EXEC.shutdownNow();
+            ((FabricHuskSync) getPlugin()).getTaskExecutor().shutdownNow();
         }
 
     }

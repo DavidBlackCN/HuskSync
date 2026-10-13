@@ -1,0 +1,3 @@
+- ✨ feat(fabric): support Minecraft 26.3 on Java 25, including 43-slot inventories, legacy 41-slot snapshot expansion, updated commands, and server-side inventory menus.
+- 🐛 fix(fabric): preserve item components, advancement progress timestamps, and ignored attribute modifiers; reject malformed enabled snapshot data instead of restoring partial player state.
+- 🐛 fix(sync): capture Fabric player snapshots on the server thread, retain asynchronous persistence, and prevent stale connection callbacks from unlocking a reconnected player.

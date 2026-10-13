@@ -2,7 +2,7 @@ name: PR Tests
 
 on:
   pull_request:
-    branches: [ 'master' ]
+    branches: [ 'master', '26.3' ]
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/master' }}
       - name: 'Build with Gradle 🏗️'
-        run: ./gradlew test --build-cache
+        run: ./gradlew build --build-cache
       - name: 'Publish Test Report 📊'
         uses: mikepenz/action-junit-report@v6
         if: success() || failure() # Continue on failure

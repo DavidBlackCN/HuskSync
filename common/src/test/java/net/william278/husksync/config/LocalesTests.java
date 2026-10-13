@@ -31,6 +31,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.File;
 import java.io.InputStream;
 import java.net.URL;
+import java.net.URISyntaxException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -65,11 +66,11 @@ public class LocalesTests {
     }
 
     @NotNull
-    private static Stream<Arguments> provideLocaleFiles() {
+    private static Stream<Arguments> provideLocaleFiles() throws URISyntaxException {
         final URL url = LocalesTests.class.getClassLoader().getResource("locales");
         assertNotNull(url, "locales folder is missing");
 
-        return Stream.of(Objects.requireNonNull(new File(url.getPath()).listFiles(
+        return Stream.of(Objects.requireNonNull(new File(url.toURI()).listFiles(
                 file -> file.getName().endsWith("yml") && !file.getName().equals("en-gb.yml")
         ))).map(file -> Arguments.of(file, file.getName().replace(".yml", "")));
     }

@@ -19,9 +19,9 @@
 
 package net.william278.husksync.data;
 
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -31,6 +31,11 @@ import java.util.Optional;
 import static net.william278.husksync.config.Settings.SynchronizationSettings.SaveOnDeathSettings;
 
 public interface FabricUserDataHolder extends UserDataHolder {
+
+    @Override
+    default boolean requiresSnapshotOnEventThread() {
+        return true;
+    }
 
     @Override
     default Optional<? extends Data> getData(@NotNull Identifier id) {
@@ -55,9 +60,8 @@ public interface FabricUserDataHolder extends UserDataHolder {
                 case "persistent_data" -> getPersistentData();
                 default -> throw new IllegalStateException(String.format("Unexpected data type: %s", id));
             };
-        } catch (Throwable e) {
-            getPlugin().debug("Failed to get data for key: " + id.asMinimalString(), e);
-            return Optional.empty();
+        } catch (RuntimeException e) {
+            throw new IllegalStateException("Failed to capture data for key: " + id.asMinimalString(), e);
         }
     }
 
@@ -76,58 +80,38 @@ public interface FabricUserDataHolder extends UserDataHolder {
         if ((isDead() && !death.isSyncDeadPlayersChangingServer())) {
             return Optional.of(FabricData.Items.Inventory.empty());
         }
-        final PlayerInventory inventory = getPlayer().getInventory();
+        final Inventory inventory = getPlayer().getInventory();
         return Optional.of(FabricData.Items.Inventory.from(
                 getCombinedInventory(inventory),
-                //#if MC<12105
-                //$$ inventory.selectedSlot
-                //#else
                 inventory.getSelectedSlot()
-                //#endif
         ));
     }
 
     // Gets the player's combined inventory; their inventory, plus offhand and armor.
     @Nullable
-    private ItemStack @NotNull [] getCombinedInventory(@NotNull PlayerInventory inv) {
-        //#if MC<12105
-        //$$ final ItemStack[] combined = new ItemStack[inv.main.size() + inv.armor.size() + inv.offHand.size()];
-        //$$ System.arraycopy(
-        //$$         inv.main.toArray(new ItemStack[0]), 0, combined,
-        //$$         0, inv.main.size()
-        //$$ );
-        //$$ System.arraycopy(
-        //$$         inv.armor.toArray(new ItemStack[0]), 0, combined,
-        //$$         inv.main.size(), inv.armor.size()
-        //$$ );
-        //$$ System.arraycopy(
-        //$$         inv.offHand.toArray(new ItemStack[0]), 0, combined,
-        //$$         inv.main.size() + inv.armor.size(), inv.offHand.size()
-        //$$ );
-        //$$ return combined;
-        //#else
-        final ItemStack[] combined = new ItemStack[inv.size()];
-        int slot = 0;
-        for (ItemStack itemStack : inv) {
-            combined[slot] = itemStack;
-            slot++;
+    private ItemStack @NotNull [] getCombinedInventory(@NotNull Inventory inv) {
+        final ItemStack[] combined = new ItemStack[inv.getContainerSize()];
+        for (int slot = 0; slot < combined.length; slot++) {
+            combined[slot] = inv.getItem(slot).copy();
         }
         return combined;
-        //#endif
     }
 
     @NotNull
     @Override
     default Optional<Data.Items.EnderChest> getEnderChest() {
-        return Optional.of(FabricData.Items.EnderChest.adapt(
-                getPlayer().getEnderChestInventory().getHeldStacks()
-        ));
+        final var inventory = getPlayer().getEnderChestInventory();
+        final ItemStack[] contents = new ItemStack[inventory.getContainerSize()];
+        for (int slot = 0; slot < contents.length; slot++) {
+            contents[slot] = inventory.getItem(slot).copy();
+        }
+        return Optional.of(FabricData.Items.EnderChest.adapt(contents));
     }
 
     @NotNull
     @Override
     default Optional<Data.PotionEffects> getPotionEffects() {
-        return Optional.of(FabricData.PotionEffects.from(getPlayer().getActiveStatusEffects().values()));
+        return Optional.of(FabricData.PotionEffects.from(getPlayer().getActiveEffectsMap().values()));
     }
 
     @NotNull
@@ -193,7 +177,17 @@ public interface FabricUserDataHolder extends UserDataHolder {
     boolean isDead();
 
     @NotNull
-    ServerPlayerEntity getPlayer();
+    ServerPlayer getPlayer();
+
+    void setPlayer(@NotNull ServerPlayer player);
+
+    @Override
+    default void respawn() {
+        final var plugin = (net.william278.husksync.FabricHuskSync) getPlugin();
+        setPlayer(plugin.getMinecraftServer().getPlayerList().respawn(
+                getPlayer(), false, net.minecraft.world.entity.Entity.RemovalReason.KILLED
+        ));
+    }
 
     @NotNull
     @Override

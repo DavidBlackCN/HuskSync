@@ -28,6 +28,7 @@ import io.lettuce.core.support.ConnectionPoolSupport;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.config.Settings;
 import net.william278.husksync.data.DataSnapshot;
+import net.william278.husksync.user.OnlineUser;
 import net.william278.husksync.user.User;
 import org.apache.commons.pool2.impl.GenericObjectPool;
 import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
@@ -284,9 +285,39 @@ public class RedisManager implements RedisPubSubListener<byte[], byte[]> {
             @NotNull User user,
             @NotNull DataSnapshot.SaveCause saveCause) {
         return plugin.getOnlineUser(user.getUuid())
-                .map(online -> CompletableFuture.completedFuture(
-                        Optional.of(online.createSnapshot(saveCause))))
-                .orElse(this.getNetworkedUserData(requestId, user));
+                .map(online -> captureOnlineUserData(online, saveCause))
+                .orElseGet(() -> this.getNetworkedUserData(requestId, user));
+    }
+
+    private CompletableFuture<Optional<DataSnapshot.Packed>> captureOnlineUserData(
+            @NotNull OnlineUser user, @NotNull DataSnapshot.SaveCause saveCause) {
+        if (!user.requiresSnapshotOnEventThread() || plugin.isEventThread()) {
+            return CompletableFuture.completedFuture(Optional.of(user.createSnapshot(saveCause)));
+        }
+        final CompletableFuture<Optional<DataSnapshot.Packed>> future = new CompletableFuture<>();
+        try {
+            plugin.runSync(() -> {
+                if (future.isDone()) {
+                    return;
+                }
+                try {
+                    if (plugin.isDisabling()) {
+                        throw new IllegalStateException("Cannot capture player data while the server is stopping");
+                    }
+                    final Optional<DataSnapshot.Packed> captured = user.hasDisconnected()
+                            ? Optional.empty() : Optional.of(user.createSnapshot(saveCause));
+                    // Consumers may perform database fallbacks; only the live capture belongs on the server thread.
+                    plugin.runAsync(() -> future.complete(captured));
+                } catch (Throwable error) {
+                    plugin.runAsync(() -> future.completeExceptionally(error));
+                }
+            }, user);
+        } catch (Throwable error) {
+            future.completeExceptionally(error);
+        }
+        // A stopped server may discard the queued tick; never leave API callers waiting indefinitely.
+        return future.orTimeout(plugin.getSettings().getSynchronization().getNetworkLatencyMilliseconds(),
+                TimeUnit.MILLISECONDS);
     }
 
     // Request a user's dat x-server

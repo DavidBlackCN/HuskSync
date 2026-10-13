@@ -19,12 +19,12 @@
 
 package net.william278.husksync.event;
 
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.InteractionResult;
 import org.jetbrains.annotations.NotNull;
 
 public interface FabricEventCallback<E extends Event> {
 
     @NotNull
-    ActionResult invoke(@NotNull E event);
+    InteractionResult invoke(@NotNull E event);
 
 }

@@ -19,8 +19,8 @@
 
 package net.william278.husksync.api;
 
-import net.minecraft.item.ItemStack;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.level.ServerPlayer;
 import net.william278.desertwell.util.ThrowingConsumer;
 import net.william278.husksync.FabricHuskSync;
 import net.william278.husksync.data.DataHolder;
@@ -76,16 +76,24 @@ public class FabricHuskSyncAPI extends HuskSyncAPI {
         instance = new FabricHuskSyncAPI(plugin);
     }
 
+    /**
+     * <b>(Internal use only)</b> - Discard the API instance when its server stops.
+     */
+    @ApiStatus.Internal
+    public static void unregister() {
+        instance = null;
+    }
+
 
     /**
-     * Returns a {@link OnlineUser} instance for the given Fabric {@link ServerPlayerEntity}.
+     * Returns a {@link OnlineUser} instance for the given Fabric {@link ServerPlayer}.
      *
      * @param player the Fabric player to get the {@link OnlineUser} instance for
-     * @return the {@link OnlineUser} instance for the given Fabric {@link ServerPlayerEntity}
+     * @return the {@link OnlineUser} instance for the given Fabric {@link ServerPlayer}
      * @since 2.0
      */
     @NotNull
-    public FabricUser getUser(@NotNull ServerPlayerEntity player) {
+    public FabricUser getUser(@NotNull ServerPlayer player) {
         return FabricUser.adapt(player, plugin);
     }
 
@@ -102,10 +110,10 @@ public class FabricHuskSyncAPI extends HuskSyncAPI {
     }
 
     /**
-     * Get the current {@link FabricData.Items.Inventory} of the given {@link ServerPlayerEntity}
+     * Get the current {@link FabricData.Items.Inventory} of the given {@link User}
      *
      * @param user the user to get the inventory of
-     * @return the {@link FabricData.Items.Inventory} of the given {@link ServerPlayerEntity}
+     * @return the {@link FabricData.Items.Inventory} of the given {@link User}
      * @since 3.6
      */
     public CompletableFuture<Optional<ItemStack[]>> getCurrentInventoryContents(@NotNull User user) {
@@ -180,10 +188,10 @@ public class FabricHuskSyncAPI extends HuskSyncAPI {
     }
 
     /**
-     * Get the current {@link FabricData.Items.EnderChest} of the given {@link ServerPlayerEntity}
+     * Get the current {@link FabricData.Items.EnderChest} of the given {@link User}
      *
      * @param user the user to get the ender chest of
-     * @return the {@link FabricData.Items.EnderChest} of the given {@link ServerPlayerEntity}, or {@link Optional#empty()} if the
+     * @return the {@link FabricData.Items.EnderChest} of the given {@link User}, or {@link Optional#empty()} if the
      * user data could not be found
      * @since 3.6
      */

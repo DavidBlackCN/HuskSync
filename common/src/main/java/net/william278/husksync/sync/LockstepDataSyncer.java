@@ -85,7 +85,11 @@ public class LockstepDataSyncer extends DataSyncer {
                         getRedis().clearUserData(user);
                     }
                     getRedis().setUserCheckedOut(user, false);
-                    plugin.unlockPlayer(user.getUuid());
+                    plugin.runSync(() -> {
+                        if (plugin.getOnlineUser(user.getUuid()).isEmpty()) {
+                            plugin.unlockPlayer(user.getUuid());
+                        }
+                    });
                 }
         );
     }

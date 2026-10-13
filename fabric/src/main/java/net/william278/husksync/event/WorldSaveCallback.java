@@ -21,7 +21,7 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.server.world.ServerWorld;
+import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Arrays;
@@ -34,6 +34,6 @@ public interface WorldSaveCallback {
             (listeners) -> (world) -> Arrays.stream(listeners).forEach(listener -> listener.save(world))
     );
 
-    void save(@NotNull ServerWorld world);
+    void save(@NotNull ServerLevel world);
 
 }

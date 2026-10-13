@@ -21,8 +21,8 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -37,7 +37,7 @@ public interface PlayerDeathDropsCallback {
                     .forEach(listener -> listener.drops(player, itemsToKeep, itemsToDrop))
     );
 
-    void drops(@NotNull ServerPlayerEntity player,
+    void drops(@NotNull ServerPlayer player,
                @Nullable ItemStack @NotNull [] itemsToKeep,
                @Nullable ItemStack @NotNull [] itemsToDrop);
 

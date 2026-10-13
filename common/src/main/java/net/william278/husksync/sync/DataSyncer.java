@@ -80,6 +80,9 @@ public abstract class DataSyncer {
 
     protected final HuskSync plugin;
     private final Map<CompletableFuture<Void>, User> pendingSaves = new ConcurrentHashMap<>();
+    // Captures waiting for a server tick must never be part of the shutdown wait on that same thread.
+    private final Set<CompletableFuture<Void>> pendingCaptures = ConcurrentHashMap.newKeySet();
+    private volatile boolean acceptingCaptures = true;
 
     // Runs any tracked saves immediately, so that saves made as the server stops can still complete.
     // Server scheduler risks data loss if the server stops before starting tasks on the next tick.
@@ -154,8 +157,50 @@ public abstract class DataSyncer {
         if (isShutdownCritical(cause)) {
             return takeSnapshotAndSave(onlineUser, cause, after);
         }
+        if (onlineUser.requiresSnapshotOnEventThread()) {
+            if (plugin.isEventThread()) {
+                return takeSnapshotAndSave(onlineUser, cause, after);
+            }
+            return captureOnEventThread(onlineUser, cause, after);
+        }
         // Any other saves can take their snapshot on the HuskSync save thread
         return runTrackedAsync(onlineUser, () -> saveData(onlineUser, onlineUser.createSnapshot(cause), after));
+    }
+
+    private CompletableFuture<Void> captureOnEventThread(@NotNull OnlineUser user,
+                                                         @NotNull DataSnapshot.SaveCause cause,
+                                                         @NotNull BiConsumer<User, DataSnapshot.Packed> after) {
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        pendingCaptures.add(future);
+        future.whenComplete((unused, error) -> pendingCaptures.remove(future));
+        if (!acceptingCaptures || plugin.isDisabling()) {
+            future.cancel(false);
+            return future;
+        }
+        try {
+            plugin.runSync(() -> {
+                if (future.isDone()) {
+                    return;
+                }
+                if (!acceptingCaptures || plugin.isDisabling() || user.hasDisconnected()) {
+                    future.cancel(false);
+                    return;
+                }
+                // Capture and dispatch the event before starting any tracked work. No save worker waits for a tick.
+                final CompletableFuture<Void> save = takeSnapshotAndSave(user, cause, after);
+                pendingCaptures.remove(future);
+                save.whenComplete((unused, error) -> {
+                    if (error == null) {
+                        future.complete(null);
+                    } else {
+                        future.completeExceptionally(error);
+                    }
+                });
+            }, user);
+        } catch (Throwable error) {
+            future.completeExceptionally(error);
+        }
+        return future;
     }
 
     // TODO - consider making these various 'save' method names and their flow clearer for future maintainers
@@ -444,6 +489,8 @@ public abstract class DataSyncer {
      * @since 4.1.0
      */
     public void awaitPendingSaves() {
+        acceptingCaptures = false;
+        pendingCaptures.forEach(future -> future.cancel(false));
         if (pendingSaves.isEmpty()) {
             return;
         }

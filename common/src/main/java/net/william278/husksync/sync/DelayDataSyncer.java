@@ -70,7 +70,11 @@ public class DelayDataSyncer extends DataSyncer {
                         // Next login uses a database snapshot, see applyLatestSnapshot()
                         getRedis().clearUserData(user);
                     }
-                    plugin.unlockPlayer(user.getUuid());
+                    plugin.runSync(() -> {
+                        if (plugin.getOnlineUser(user.getUuid()).isEmpty()) {
+                            plugin.unlockPlayer(user.getUuid());
+                        }
+                    });
                 }
         );
     }

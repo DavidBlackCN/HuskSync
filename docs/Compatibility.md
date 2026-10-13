@@ -1,4 +1,6 @@
-HuskSync supports the following versions of Minecraft. Since v3.7, you must download the correct version of HuskSync for your server:
+This branch includes an alpha Fabric port for Minecraft 26.3, requiring Java 25, Fabric Loader 0.19.5 or newer, and Fabric API 0.162.0+26.3. It runs only on the dedicated server; clients do not need HuskSync. Synchronization remains Fabric-to-Fabric on the same Minecraft version. Existing Fabric inventory snapshots can be upgraded to the 26.3 inventory layout; this does not enable Paper-to-Fabric conversion or synchronization between Minecraft versions.
+
+The upstream compatibility information is listed below. Since v3.7, you must download the correct version of HuskSync for your server:
 
 |    Minecraft    | Latest HuskSync | Java Version | Platforms     | Support Status                |
 |:---------------:|:---------------:|:------------:|:--------------|:------------------------------|

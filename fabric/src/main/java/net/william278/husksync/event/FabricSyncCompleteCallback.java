@@ -21,7 +21,7 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.InteractionResult;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.user.OnlineUser;
 import org.jetbrains.annotations.NotNull;
@@ -37,7 +37,7 @@ public interface FabricSyncCompleteCallback extends FabricEventCallback<SyncComp
                     listener.invoke(event);
                 }
 
-                return ActionResult.PASS;
+                return InteractionResult.PASS;
             });
 
     @NotNull

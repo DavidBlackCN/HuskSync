@@ -21,8 +21,8 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionResult;
 import org.jetbrains.annotations.NotNull;
 
 public interface PlayerCommandCallback {
@@ -31,17 +31,17 @@ public interface PlayerCommandCallback {
     Event<PlayerCommandCallback> EVENT = EventFactory.createArrayBacked(PlayerCommandCallback.class,
             (listeners) -> (player, command) -> {
                 for (PlayerCommandCallback listener : listeners) {
-                    ActionResult result = listener.interact(player, command);
+                    InteractionResult result = listener.interact(player, command);
 
-                    if (result != ActionResult.PASS) {
+                    if (result != InteractionResult.PASS) {
                         return result;
                     }
                 }
 
-                return ActionResult.PASS;
+                return InteractionResult.PASS;
             });
 
     @NotNull
-    ActionResult interact(PlayerEntity player, String command);
+    InteractionResult interact(Player player, String command);
 
 }

@@ -21,7 +21,7 @@ package net.william278.husksync.event;
 
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
-import net.minecraft.util.ActionResult;
+import net.minecraft.world.InteractionResult;
 import net.william278.husksync.HuskSync;
 import net.william278.husksync.data.DataSnapshot;
 import net.william278.husksync.user.OnlineUser;
@@ -34,16 +34,16 @@ public interface FabricPreSyncCallback extends FabricEventCallback<PreSyncEvent>
     Event<FabricPreSyncCallback> EVENT = EventFactory.createArrayBacked(FabricPreSyncCallback.class,
             (listeners) -> (event) -> {
                 for (FabricPreSyncCallback listener : listeners) {
-                    final ActionResult result = listener.invoke(event);
+                    final InteractionResult result = listener.invoke(event);
                     if (event.isCancelled()) {
-                        return ActionResult.CONSUME;
-                    } else if (result != ActionResult.PASS) {
+                        return InteractionResult.CONSUME;
+                    } else if (result != InteractionResult.PASS) {
                         event.setCancelled(true);
                         return result;
                     }
                 }
 
-                return ActionResult.PASS;
+                return InteractionResult.PASS;
             });
 
     @NotNull

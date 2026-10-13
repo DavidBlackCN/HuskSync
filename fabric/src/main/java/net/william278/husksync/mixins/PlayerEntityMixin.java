@@ -19,72 +19,55 @@
 
 package net.william278.husksync.mixins;
 
-import net.minecraft.enchantment.EnchantmentHelper;
-import net.minecraft.enchantment.Enchantments;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
-import net.minecraft.registry.tag.TagKey;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.EnchantmentEffectComponents;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.level.gamerules.GameRules;
 import net.william278.husksync.event.PlayerDeathDropsCallback;
-import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
-import org.spongepowered.asm.mixin.Final;
+import net.william278.husksync.event.ItemDropCallback;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(PlayerEntity.class)
+@Mixin(Player.class)
 public class PlayerEntityMixin {
 
-    @Final
-    @Shadow
-    PlayerInventory inventory;
-
-    @Inject(method = "dropInventory", at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/player/PlayerEntity;vanishCursedItems()V"))
-    protected void dropInventory(@NotNull CallbackInfo ci) {
-        final PlayerEntity player = (PlayerEntity) (Object) this;
-        PlayerDeathDropsCallback.EVENT.invoker().drops((ServerPlayerEntity) player, getItemsToKeep(), getItemsToDrop());
-    }
-
-    @Unique
-    @Nullable
-    private ItemStack @NotNull [] getItemsToKeep() {
-        final @Nullable ItemStack @NotNull [] toKeep = new ItemStack[inventory.size()];
-        for (int i = 0; i < inventory.size(); ++i) {
-            ItemStack itemStack = inventory.getStack(i);
-            if (!itemStack.isEmpty() && hasVanishingCurse(itemStack)) {
-                toKeep[i] = null;
+    @Inject(method = "dropEquipment(Lnet/minecraft/server/level/ServerLevel;)V", at = @At("HEAD"), cancellable = true)
+    private void onDeathDrops(ServerLevel level, CallbackInfo ci) {
+        if (!((Object) this instanceof ServerPlayer player)) {
+            return;
+        }
+        final Inventory inventory = player.getInventory();
+        final boolean keepInventory = level.getGameRules().get(GameRules.KEEP_INVENTORY);
+        if (ItemDropCallback.EVENT.invoker().interact(player, ItemStack.EMPTY) == InteractionResult.FAIL) {
+            // Match normal death cleanup while preventing stale local inventory from reaching the world.
+            // clearContent also clears equipment, including vanishing items; keepInventory keeps everything.
+            if (!keepInventory) {
+                inventory.clearContent();
+            }
+            ci.cancel();
+            return;
+        }
+        final ItemStack[] toKeep = new ItemStack[inventory.getContainerSize()];
+        final ItemStack[] toDrop = new ItemStack[inventory.getContainerSize()];
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            final ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty()) {
                 continue;
             }
-            toKeep[i] = itemStack;
-        }
-        return toKeep;
-    }
-
-    @Unique
-    @Nullable
-    private ItemStack @NotNull [] getItemsToDrop() {
-        final @Nullable ItemStack @NotNull [] toDrop = new ItemStack[inventory.size()];
-        for (int i = 0; i < inventory.size(); ++i) {
-            ItemStack itemStack = inventory.getStack(i);
-            if (!itemStack.isEmpty() && hasVanishingCurse(itemStack)) {
-                toDrop[i] = itemStack;
-                continue;
+            if (keepInventory) {
+                toKeep[slot] = stack.copy();
+            } else if (!EnchantmentHelper.has(stack, EnchantmentEffectComponents.PREVENT_EQUIPMENT_DROP)) {
+                toDrop[slot] = stack.copy();
             }
-            toDrop[i] = null;
         }
-        return toDrop;
-    }
-
-    @Unique
-    private boolean hasVanishingCurse(@NotNull ItemStack stack) {
-        return EnchantmentHelper.hasAnyEnchantmentsIn(
-                stack, TagKey.of(Enchantments.VANISHING_CURSE.getRegistryRef(), Enchantments.VANISHING_CURSE.getValue())
-        );
+        PlayerDeathDropsCallback.EVENT.invoker().drops(player, toKeep, toDrop);
     }
 
 }
